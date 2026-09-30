@@ -23,9 +23,10 @@ class ChuteService(PlantService):
     line = "mix"
     subject = "chute"
 
-    def __init__(self, context, recipes: RecipeService, machine=None) -> None:
+    def __init__(self, context, recipes: RecipeService, machine=None, load_service=None) -> None:
         super().__init__(context, machine)
         self.recipes = recipes
+        self.load_service = load_service
         self.queue = TruckQueue()
         self.manifest = LoadManifest()
         self._open_batch: str | None = None
@@ -51,6 +52,8 @@ class ChuteService(PlantService):
             batch_id=batch_id,
         )
         length = int(timer.get("length", 0)) if timer else 0
+        if self.load_service is not None:
+            self.load_service.require_discharge_allowed(batch_id)
         self._open_batch = batch_id
         self.publish(DOOR_KIND, door_state(open=True, batch_id=batch_id).describe())
         self.publish(OPEN_KIND, open_payload(batch_id=batch_id, window_ticks=length))
@@ -101,6 +104,28 @@ class ChuteService(PlantService):
         self.publish(DOOR_KIND, door_state(open=False, batch_id=batch_id).describe())
         self.emit("chute.door_closed", {"batch_id": batch_id})
         return {"door": door_state(open=False, batch_id=batch_id).describe(), "manifest": self.manifest.describe()}
+
+    def rollback_to_blocked(self, batch_id: str) -> None:
+        """Rebuild the discharge-side memory after an abnormal release rollback."""
+
+        self._open_batch = None
+        self.manifest = LoadManifest()
+        for record in self.store.visible():
+            if record.kind != LOAD_KIND or not record.payload.get("active", False):
+                continue
+            if str(record.payload.get("batch_id", "")) != batch_id:
+                continue
+            load = load_record(
+                truck_id=str(record.payload["truck_id"]),
+                batch_id=str(record.payload["batch_id"]),
+                volume_m3=float(record.payload["volume_m3"]),
+                tick=int(record.payload.get("tick", record.tick)),
+            )
+            self.manifest.record(load)
+            self._open_batch = load.batch_id
+        door = self.payload_entry("chute", "door")
+        if door is not None and door.get("active", False):
+            self._open_batch = str(door.get("batch_id", batch_id))
 
     def status(self) -> dict[str, Any]:
         door = self.payload_entry("chute", "door")

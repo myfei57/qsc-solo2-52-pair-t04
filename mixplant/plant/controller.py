@@ -36,6 +36,7 @@ class PlantController:
             mix_service=self.runtime.mix,
             cement_service=self.runtime.cement,
             water_service=self.runtime.water,
+            load_service=self.runtime.loads,
         )
 
     def discharge_view(self) -> dict[str, Any]:
@@ -43,6 +44,7 @@ class PlantController:
             chute_service=self.runtime.chute,
             pump_service=self.runtime.pump,
             sampler_service=self.runtime.sampler,
+            load_service=self.runtime.loads,
         )
 
     def alarm_view(self) -> dict[str, Any]:

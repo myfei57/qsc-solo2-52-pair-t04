@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from ..clock import Clock
 from ..errors import NotDurableError, RecordError, RestoreError, UnknownRecordError
@@ -211,14 +211,19 @@ class RecordRepository:
     def tombstone(self, target_seq: int, *, reason: str, origin: str, generation: int) -> Record:
         """Neutralise one earlier record."""
 
+        record = self.stage_tombstone(target_seq, reason=reason, origin=origin, generation=generation)
+        self.flush()
+        self.commit_through(record.seq)
+        return record
+
+    def stage_tombstone(self, target_seq: int, *, reason: str, origin: str, generation: int) -> Record:
+        """Validate and append a tombstone without committing it."""
+
         if target_seq < 1 or target_seq > len(self._records):
             raise UnknownRecordError("tombstone target does not exist", target=target_seq)
         if target_seq > self._committed_seq:
             raise RecordError("cannot tombstone a record that was never committed", target=target_seq)
-        record = self._append_tombstone(target_seq, reason, origin, generation)
-        self.flush()
-        self.commit_through(record.seq)
-        return record
+        return self._append_tombstone(target_seq, reason, origin, generation)
 
     def _append_tombstone(self, target_seq: int, reason: str, origin: str, generation: int) -> Record:
         record = Record.create(
@@ -245,12 +250,30 @@ class RecordRepository:
         """Tombstone every committed record after ``seq`` in one commit."""
 
         targets = rollback_targets(self._records[: self._committed_seq], seq)
-        if not targets:
+        return self.tombstone_records(
+            targets, reason=reason, origin=origin, generation=generation
+        )
+
+    def tombstone_records(
+        self,
+        target_seqs: Iterable[int],
+        *,
+        reason: str,
+        origin: str,
+        generation: int,
+    ) -> tuple[Record, ...]:
+        """Tombstone an explicitly selected set of committed records together."""
+
+        targets = tuple(dict.fromkeys(target_seqs))
+        staged = [
+            self.stage_tombstone(target, reason=reason, origin=origin, generation=generation)
+            for target in targets
+        ]
+        if not staged:
             return ()
-        records = tuple(self._append_tombstone(target, reason, origin, generation) for target in targets)
         self.flush()
-        self.commit_through(records[-1].seq)
-        return records
+        self.commit_through(staged[-1].seq)
+        return tuple(staged)
 
     def snapshot(self, *, generation: int, validity: Validity, scope: str = "snap") -> Snapshot:
         """Materialise the committed state and store it."""

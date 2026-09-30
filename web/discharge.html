@@ -15,6 +15,15 @@
 <body>
   <nav><a href="/pages/recipe">recipe</a><a href="/pages/batch">batch</a><a href="/pages/discharge">discharge</a><a href="/pages/alarms">alarms</a></nav>
   <h1>Discharge and delivery</h1>
+  <section id="load-panel">
+    <h2>Mixer load</h2>
+    <form id="load-point"><input name="load_kw" value="42"><button type="submit">record load</button></form>
+    <form id="load-evaluate"><button type="submit">evaluate</button></form>
+    <form id="load-mark"><input name="use" value="structural"><button type="submit">mark abnormal</button></form>
+    <form id="load-release"><button type="submit">confirm release</button></form>
+    <form id="load-rollback"><button type="submit">rollback release</button></form>
+    <pre id="load-status"></pre>
+  </section>
   <form id="arrive"><input name="truck_id" value="T-01"><button type="submit">truck arrives</button></form>
   <form id="open"><button type="submit">open door</button></form>
   <form id="load"><input name="truck_id" value="T-01"><input name="volume_m3" value="6"><button type="submit">load</button></form>
@@ -32,6 +41,12 @@
   <script>
     const state = JSON.parse(document.getElementById('plant-state').textContent || '{}');
     const body = document.querySelector('#queue tbody');
+    const load = state.subsystems?.load || {};
+    document.getElementById('load-status').textContent = JSON.stringify({
+      blocked: load.blocked || [],
+      verdict: Object.values(load.verdicts || {}).at(-1) || null,
+      criteria: load.current_criteria || null
+    }, null, 2);
     for (const truck of (state.queue?.order || [])) {
       const row = document.createElement('tr');
       row.innerHTML = `<td>${truck}</td>`;
@@ -42,7 +57,7 @@
       const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entries) });
       return response.json();
     }
-    const routes = { arrive: '/api/chute/arrive', open: '/api/chute/open', load: '/api/chute/load', confirm: '/api/chute/confirm', prime: '/api/pump/prime', pump: '/api/pump/start', stroke: '/api/pump/stroke', pressure: '/api/pump/pressure', finish: '/api/pump/finish', draw: '/api/sampler/draw', release: '/api/sampler/release', file: '/api/sampler/file' };
+    const routes = { arrive: '/api/chute/arrive', open: '/api/chute/open', load: '/api/chute/load', confirm: '/api/chute/confirm', prime: '/api/pump/prime', pump: '/api/pump/start', stroke: '/api/pump/stroke', pressure: '/api/pump/pressure', finish: '/api/pump/finish', draw: '/api/sampler/draw', release: '/api/sampler/release', file: '/api/sampler/file', 'load-point': '/api/load/point', 'load-evaluate': '/api/load/evaluate', 'load-mark': '/api/load/mark', 'load-release': '/api/load/release', 'load-rollback': '/api/load/rollback-release' };
     for (const [id, path] of Object.entries(routes)) {
       document.getElementById(id).addEventListener('submit', async (event) => { event.preventDefault(); console.log(await post(path, event.target)); location.reload(); });
     }

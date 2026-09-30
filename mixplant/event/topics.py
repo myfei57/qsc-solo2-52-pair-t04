@@ -8,6 +8,7 @@ AGG = "agg"
 CEMENT = "cement"
 WATER = "water"
 MIX = "mix"
+LOAD = "load"
 CHUTE = "chute"
 PUMP = "pump"
 SAMPLER = "sampler"
@@ -21,6 +22,7 @@ TOPICS: tuple[str, ...] = (
     CEMENT,
     WATER,
     MIX,
+    LOAD,
     CHUTE,
     PUMP,
     SAMPLER,
@@ -35,6 +37,7 @@ _ORIGIN_TOPICS = {
     "cement": CEMENT,
     "water": WATER,
     "mix": MIX,
+    "load": LOAD,
     "chute": CHUTE,
     "pump": PUMP,
     "sampler": SAMPLER,

@@ -19,5 +19,20 @@
     "baseline_ttl_ticks": 32,
     "confirmation_ttl_ticks": 10,
     "snapshot_ttl_ticks": 64
+  },
+  "load": {
+    "criteria": {
+      "max_load_kw": 55.0,
+      "stall_drop_ratio": 0.25,
+      "stall_min_points": 3,
+      "ramp_min_delta_kw": 6.0,
+      "ramp_min_load_ratio": 0.65,
+      "ramp_min_points": 3,
+      "min_profile_points": 4,
+      "dispositions": {
+        "*": "rework",
+        "structural:C30": "scrap"
+      }
+    }
   }
 }

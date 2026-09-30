@@ -7,6 +7,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
+from .load.criteria import default_criteria
+
 
 @dataclass(frozen=True, slots=True)
 class Limits:
@@ -45,6 +47,16 @@ class ValidityDefaults:
 
 
 @dataclass(frozen=True, slots=True)
+class LoadMonitoringConfig:
+    """Default load criteria and whether supplied criteria may override them."""
+
+    criteria: Mapping[str, Any] = field(default_factory=lambda: default_criteria().describe())
+
+    def criteria_mapping(self) -> Mapping[str, Any]:
+        return dict(self.criteria)
+
+
+@dataclass(frozen=True, slots=True)
 class StationConfig:
     """Everything the runtime needs in order to boot."""
 
@@ -55,6 +67,7 @@ class StationConfig:
     web_dir: Path = Path("web")
     limits: Limits = field(default_factory=Limits)
     defaults: ValidityDefaults = field(default_factory=ValidityDefaults)
+    load_monitoring: LoadMonitoringConfig = field(default_factory=LoadMonitoringConfig)
 
     @classmethod
     def from_mapping(cls, document: Mapping[str, Any]) -> "StationConfig":
@@ -62,6 +75,10 @@ class StationConfig:
 
         limits = Limits(**dict(document.get("limits") or {}))
         defaults = ValidityDefaults(**dict(document.get("defaults") or {}))
+        raw_load = dict(document.get("load") or {})
+        load = LoadMonitoringConfig(
+            criteria={**default_criteria().describe(), **dict(raw_load.get("criteria") or {})}
+        )
         return cls(
             station=str(document.get("station", "plant-a")),
             host=str(document.get("host", "127.0.0.1")),
@@ -70,6 +87,7 @@ class StationConfig:
             web_dir=Path(str(document.get("web_dir", "web"))),
             limits=limits,
             defaults=defaults,
+            load_monitoring=load,
         )
 
     @classmethod
@@ -94,4 +112,5 @@ class StationConfig:
             "port": self.port,
             "data_dir": str(self.data_dir),
             "limits": self.limits.as_mapping(),
+            "load_monitoring": {"criteria": self.load_monitoring.criteria_mapping()},
         }

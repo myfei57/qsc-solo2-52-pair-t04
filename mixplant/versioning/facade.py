@@ -34,6 +34,11 @@ class VersionedArtifacts:
     def bump(self, subject: str, *, tick: int) -> GenerationToken:
         return self.generations.bump(subject, tick=tick)
 
+    def adopt_generation(self, subject: str, generation: int) -> None:
+        """Adopt a generation read back from the stream."""
+
+        self.generations.adopt(subject, generation)
+
     def publish_baseline(
         self,
         name: str,

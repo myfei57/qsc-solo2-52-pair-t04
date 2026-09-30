@@ -29,10 +29,28 @@ class AuditService(PlantService):
     def note(self, name: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
         """Write one named event to the ledger and the stream."""
 
-        entry = audit_entry(name=name, origin=self.origin, tick=self.context.clock.now(), detail=detail or {})
-        self.ledger.record(entry)
+        entry = self.entry(name, detail or {})
         self.publish(ENTRY_KIND, entry.describe())
         return {"entry": entry.describe(), "count": self.ledger.count()}
+
+    def entry(self, name: str, detail: dict[str, Any] | None = None):
+        """Build one audit entry and copy it into this shift's ledger."""
+
+        entry = audit_entry(name=name, origin=self.origin, tick=self.context.clock.now(), detail=detail or {})
+        self.ledger.record(entry)
+        return entry
+
+    def stage_entry(self, name: str, detail: dict[str, Any] | None = None):
+        """Stage an audit entry as part of a caller's transaction."""
+
+        entry = audit_entry(name=name, origin=self.origin, tick=self.context.clock.now(), detail=detail or {})
+        record = self.store.stage(ENTRY_KIND, self.origin, self.generation(), entry.describe())
+        return entry, record
+
+    def accept_staged(self, entry) -> None:
+        """Remember a staged entry after its transaction committed."""
+
+        self.ledger.record(entry)
 
     def note_sample(self, *, batch_id: str, sample_id: str) -> dict[str, Any]:
         """Record that a laboratory sample was filed."""

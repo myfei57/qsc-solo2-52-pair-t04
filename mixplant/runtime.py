@@ -21,6 +21,7 @@ from .event.subscribers import AlarmCollector, AuditSubscriber
 from .event.topics import ALARM, STORE
 from .ids import SequenceIds
 from .interlocks import build_engine
+from .load.service import LoadService
 from .mix.service import MixService
 from .moist.comp import Compensation
 from .moist.service import MoistService
@@ -53,6 +54,11 @@ LATCH_KIND = "sampler.latch"
 COMP_KIND = "moist.comp"
 SELECTED_KIND = "recipe.selected"
 PUBLISHED_KIND = "recipe.published"
+LOAD_CRITERIA_KIND = "load.criteria"
+LOAD_PROFILE_KIND = "load.profile"
+LOAD_VERDICT_KIND = "load.verdict"
+LOAD_MARKER_KIND = "load.marker"
+LOAD_RELEASE_KIND = "load.release"
 
 LINES: tuple[str, ...] = tuple(LINE_SEQUENCES)
 EXTRA_DEVICES = (
@@ -106,10 +112,13 @@ class PlantRuntime:
         self.cement = CementService(self.context, self.machines["mix"])
         self.water = WaterService(self.context, self.machines["mix"])
         self.mix = MixService(self.context, self.recipes, self.machines["mix"])
-        self.chute = ChuteService(self.context, self.recipes, self.machines["mix"])
+        self.audit = AuditService(self.context, self.machines["batch"], alarms=self.alarms)
+        self.loads = LoadService(self.context, self.audit, self.machines["mix"])
+        self.load = self.loads
+        self.chute = ChuteService(self.context, self.recipes, self.machines["mix"], self.loads)
+        self.loads.chute_service = self.chute
         self.pump = PumpService(self.context, self.machines["delivery"])
         self.sampler = SamplerService(self.context, self.recipes, self.machines["delivery"])
-        self.audit = AuditService(self.context, self.machines["batch"], alarms=self.alarms)
         self.controller = PlantController(self)
         self.boot_report: RestoreReport | None = None
         self._services: dict[str, PlantService] = {
@@ -119,6 +128,7 @@ class PlantRuntime:
             "cement": self.cement,
             "water": self.water,
             "mix": self.mix,
+            "load": self.loads,
             "chute": self.chute,
             "pump": self.pump,
             "sampler": self.sampler,
@@ -214,6 +224,14 @@ class PlantRuntime:
                     started=record.payload.get("started"),
                     length=int(record.payload.get("length", 0)),
                 )
+            elif record.kind in {
+                LOAD_CRITERIA_KIND,
+                LOAD_PROFILE_KIND,
+                LOAD_VERDICT_KIND,
+                LOAD_MARKER_KIND,
+                LOAD_RELEASE_KIND,
+            }:
+                self.loads.replay_record(record)
             elif record.kind == LATCH_KIND:
                 self.sampler.latch.sync(
                     latched=bool(record.payload.get("active", False)),
@@ -229,6 +247,7 @@ class PlantRuntime:
                     validity=Validity.never(record.tick),
                 )
         self.moist.sync(corrections)
+        self.loads.rebuild()
 
     def _hydrate_machines(self) -> None:
         for line, machine in self.machines.items():
@@ -432,6 +451,34 @@ class PlantRuntime:
             ),
             "water.prime": lambda payload: self.water.prime(litres=number(payload, "litres")),
             "mix.start": lambda payload: self.mix.start(),
+            "load.criteria": lambda payload: self.loads.publish_criteria(self._mapping(payload, "criteria")),
+            "load.point": lambda payload: self.loads.record_point(
+                load_kw=number(payload, "load_kw"),
+                batch_id=optional_text(payload, "batch_id", None),
+                tick=optional_integer(payload, "tick", None),
+            ),
+            "load.evaluate": lambda payload: self.loads.evaluate(
+                batch_id=optional_text(payload, "batch_id", None),
+                use=optional_text(payload, "use", None),
+                mark=str(payload.get("mark", "")).lower() in {"1", "true", "yes", "on"},
+            ),
+            "load.mark": lambda payload: self.loads.mark(
+                use=text(payload, "use"),
+                batch_id=optional_text(payload, "batch_id", None),
+                reason=optional_text(payload, "reason", "load profile abnormal"),
+            ),
+            "load.release": lambda payload: self.loads.release(
+                batch_id=optional_text(payload, "batch_id", None),
+                reason=optional_text(payload, "reason", "operator confirmed release"),
+            ),
+            "load.rollback_release": lambda payload: self.loads.rollback_release(
+                batch_id=optional_text(payload, "batch_id", None),
+                reason=optional_text(payload, "reason", "release criteria no longer trusted"),
+            ),
+            "load.rollback_criteria": lambda payload: self.loads.rollback_criteria_after(
+                integer(payload, "seq"),
+                reason=optional_text(payload, "reason", "load criteria no longer trusted"),
+            ),
             "mix.feed": lambda payload: self.mix.feed(component=text(payload, "component")),
             "mix.time": lambda payload: self.mix.begin_timer(),
             "mix.finish": lambda payload: self.mix.finish_timer(),
@@ -509,6 +556,19 @@ class PlantRuntime:
             sample_id=str(result["sample"]["sample_id"]),
         )
         return result
+
+    @staticmethod
+    def _mapping(payload: Mapping[str, Any], key: str) -> dict[str, Any]:
+        """Read an optional JSON object field."""
+
+        raw = payload.get(key)
+        if raw in (None, ""):
+            return {}
+        if not isinstance(raw, Mapping):
+            from .errors import ValidationError
+
+            raise ValidationError("command field must be an object", field=key)
+        return dict(raw)
 
     @staticmethod
     def _factors(payload: Mapping[str, Any]) -> dict[str, float]:
