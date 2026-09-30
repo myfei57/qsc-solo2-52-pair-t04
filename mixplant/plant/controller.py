@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from .batch import batch_view
 from .diagnostics import run_diagnostics
+from .load import load_view
 from .manifest import describe_manifest
 from .mix import mix_view
 from .recipe import recipe_view
@@ -44,6 +45,9 @@ class PlantController:
             pump_service=self.runtime.pump,
             sampler_service=self.runtime.sampler,
         )
+
+    def load_view(self) -> dict[str, Any]:
+        return load_view(load_service=self.runtime.load, batches=self.runtime.batches)
 
     def alarm_view(self) -> dict[str, Any]:
         return {

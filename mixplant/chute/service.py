@@ -23,9 +23,10 @@ class ChuteService(PlantService):
     line = "mix"
     subject = "chute"
 
-    def __init__(self, context, recipes: RecipeService, machine=None) -> None:
+    def __init__(self, context, recipes: RecipeService, machine=None, load_monitor=None) -> None:
         super().__init__(context, machine)
         self.recipes = recipes
+        self.load_monitor = load_monitor
         self.queue = TruckQueue()
         self.manifest = LoadManifest()
         self._open_batch: str | None = None
@@ -51,6 +52,14 @@ class ChuteService(PlantService):
             batch_id=batch_id,
         )
         length = int(timer.get("length", 0)) if timer else 0
+        if self.load_monitor is not None and self.load_monitor.is_blocked(batch_id):
+            from ..errors import InterlockBlockedError
+
+            raise InterlockBlockedError(
+                "the discharge door stays shut while the batch is quarantined",
+                action="chute.open",
+                batch_id=batch_id,
+            )
         self._open_batch = batch_id
         self.publish(DOOR_KIND, door_state(open=True, batch_id=batch_id).describe())
         self.publish(OPEN_KIND, open_payload(batch_id=batch_id, window_ticks=length))

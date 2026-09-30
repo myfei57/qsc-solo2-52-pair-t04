@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Mixer load &amp; quarantine</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #f5f6f8; color: #1c1f24; }
+    table { border-collapse: collapse; width: 100%; background: #fff; margin-bottom: 1rem; }
+    th, td { border: 1px solid #d7dbe0; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.9rem; }
+    form { background: #fff; padding: 1rem; border: 1px solid #d7dbe0; margin-bottom: 1rem; }
+    input, button { padding: 0.35rem 0.5rem; margin: 0.2rem; }
+    nav a { margin-right: 0.8rem; }
+    .blocked { color: #8a1f1f; font-weight: bold; }
+    .released { color: #1f6b33; font-weight: bold; }
+    .spark { font-family: ui-monospace, monospace; white-space: pre; }
+  </style>
+</head>
+<body>
+  <nav><a href="/pages/recipe">recipe</a><a href="/pages/batch">batch</a><a href="/pages/discharge">discharge</a><a href="/pages/load">load</a><a href="/pages/alarms">alarms</a></nav>
+  <h1>Mixer load &amp; quarantine</h1>
+  <p>Gate: <span id="gate">unknown</span> · criteria version <span id="criteria-version"></span></p>
+
+  <form id="series">
+    <input name="batch_id" value="B-001">
+    <input name="powers" value="50,52,55,54,20,22,18,53" size="28">
+    <button type="submit">record load series (kW)</button>
+  </form>
+  <form id="judge">
+    <input name="batch_id" value="B-001">
+    <button type="submit">judge batch</button>
+  </form>
+  <form id="mark">
+    <input name="batch_id" value="B-001">
+    <input name="idempotency_key" value="mark-1">
+    <input name="reason" value="operator">
+    <button type="submit">mark (idempotent)</button>
+  </form>
+  <form id="release">
+    <input name="batch_id" value="B-001">
+    <input name="issuer" value="operator">
+    <input name="disposition" value="" placeholder="auto by grade">
+    <button type="submit">confirm release</button>
+  </form>
+  <form id="rollback">
+    <input name="batch_id" value="B-001">
+    <input name="reason" value="criteria untrusted">
+    <button type="submit">roll back to blocked</button>
+  </form>
+  <form id="rollback-criteria">
+    <input name="version" value="2">
+    <button type="submit">roll back criteria generation</button>
+  </form>
+
+  <table id="holds"><thead>
+    <tr><th>batch</th><th>grade</th><th>state</th><th>disposition</th><th>criteria</th><th>triggers</th></tr>
+  </thead><tbody></tbody></table>
+
+  <table id="batches"><thead>
+    <tr><th>batch</th><th>samples</th><th>verdict</th><th>mean / peak kW</th><th>blocked</th><th>trace</th></tr>
+  </thead><tbody></tbody></table>
+
+  <script id="plant-state" type="application/json"><!--STATE--></script>
+  <script>
+    const state = JSON.parse(document.getElementById('plant-state').textContent || '{}');
+    const gate = document.querySelector('#gate');
+    gate.textContent = state.gate?.blocked ? `BLOCKED on ${state.gate.blocked_batch}` : 'clear';
+    gate.className = state.gate?.blocked ? 'blocked' : 'released';
+    document.querySelector('#criteria-version').textContent = state.criteria?.version;
+
+    function spark(values, rated, over) {
+      return values.map(v => v <= rated * 0.45 ? '_' : (v >= over ? '^' : '#')).join('');
+    }
+    const holdsBody = document.querySelector('#holds tbody');
+    for (const hold of (state.holds || [])) {
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>${hold.batch_id}</td><td>${hold.grade}</td>
+        <td class="${hold.state === 'under_review' ? 'blocked' : 'released'}">${hold.state}</td>
+        <td>${hold.disposition}</td><td>${hold.criteria_version}</td>
+        <td>${(hold.triggers || []).join(', ')}</td>`;
+      holdsBody.appendChild(row);
+    }
+    const batchesBody = document.querySelector('#batches tbody');
+    for (const batch of (state.batches || [])) {
+      const values = (batch.samples || []).map(s => s.power_kw);
+      const verdict = batch.verdict?.code || '—';
+      const mean = batch.verdict?.features?.mean_kw ?? '—';
+      const peak = batch.verdict?.features?.peak_kw ?? '—';
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>${batch.batch_id}</td><td>${batch.sample_count}</td>
+        <td class="${batch.blocked ? 'blocked' : ''}">${verdict}</td>
+        <td>${mean} / ${peak}</td><td>${batch.blocked ? 'BLOCKED' : 'no'}</td>
+        <td class="spark">${spark(values, state.criteria.rated_power_kw, state.criteria.overload_kw)}</td>`;
+      batchesBody.appendChild(row);
+    }
+    async function post(path, form) {
+      const entries = Object.fromEntries(new FormData(form).entries());
+      if (entries.powers) entries.powers = entries.powers.split(',').map(Number);
+      const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entries) });
+      return response.json();
+    }
+    const routes = { series: '/api/load/observe-series', judge: '/api/load/judge', mark: '/api/load/mark', release: '/api/load/release', rollback: '/api/load/rollback', 'rollback-criteria': '/api/load/rollback-criteria' };
+    for (const [id, path] of Object.entries(routes)) {
+      document.getElementById(id).addEventListener('submit', async (event) => { event.preventDefault(); console.log(await post(path, event.target)); location.reload(); });
+    }
+  </script>
+</body>
+</html>

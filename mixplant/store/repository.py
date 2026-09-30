@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from ..clock import Clock
 from ..errors import NotDurableError, RecordError, RestoreError, UnknownRecordError
@@ -233,6 +233,31 @@ class RecordRepository:
         self._records.append(record)
         self._append_entry(JournalEntry(entry_type=ENTRY_APPEND, tick=record.tick, record=record))
         return record
+
+    def tombstone_many(
+        self,
+        target_seqs: Iterable[int],
+        *,
+        reason: str,
+        origin: str,
+        generation: int,
+    ) -> tuple[Record, ...]:
+        """Neutralise several committed records in one commit.
+
+        This is the scoped version of :meth:`rollback_after`: instead of
+        hiding a suffix of the whole stream it hides exactly the named
+        segment, so a partial failure in one batch never rewrites unrelated
+        production.
+        """
+
+        ordered = tuple(dict.fromkeys(target_seqs))
+        records = tuple(
+            self._append_tombstone(target, reason, origin, generation) for target in ordered
+        )
+        if records:
+            self.flush()
+            self.commit_through(records[-1].seq)
+        return records
 
     def rollback_after(
         self,

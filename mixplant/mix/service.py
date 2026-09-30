@@ -35,9 +35,10 @@ class MixService(PlantService):
     line = "mix"
     subject = "mix"
 
-    def __init__(self, context, recipes: RecipeService, machine=None) -> None:
+    def __init__(self, context, recipes: RecipeService, machine=None, load_monitor=None) -> None:
         super().__init__(context, machine)
         self.recipes = recipes
+        self.load_monitor = load_monitor
         self.timer = MixTimer()
         self.cycles = CycleTracker()
         self._fed: tuple[str, ...] = ()
@@ -49,6 +50,8 @@ class MixService(PlantService):
         if batch is None:
             raise NotFoundError("declare a batch before starting the mixer")
         cycle = self.cycles.begin(batch.batch_id, self.recipes.current_version(), tick=self.context.clock.now())
+        if self.load_monitor is not None:
+            self.load_monitor.reset_gate(cycle.batch_id)
         self._fed = ()
         self.publish(MIXER_KIND, {"active": True, "batch_id": cycle.batch_id})
         self.publish(CYCLE_KIND, cycle.describe())
@@ -97,8 +100,15 @@ class MixService(PlantService):
         self.publish(TIMER_KIND, self.timer.payload(now, finished=True))
         if self.machine.is_at(MixPhase.MIXING.value):
             self.advance(MixPhase.MIXED.value, "mixing window has finished")
-        self.emit("mix.window_finished", {"batch_id": self.cycles.require_current().batch_id})
-        return {"timer": self.timer.payload(now, finished=True)}
+        cycle = self.cycles.require_current()
+        judged = None
+        if self.load_monitor is not None and self.load_monitor.has_samples(cycle.batch_id):
+            judged = self.load_monitor.judge_batch(cycle.batch_id).get("verdict")
+        self.emit("mix.window_finished", {"batch_id": cycle.batch_id})
+        result = {"timer": self.timer.payload(now, finished=True)}
+        if judged is not None:
+            result["load_verdict"] = judged
+        return result
 
     def schedule_sample(self) -> dict[str, Any]:
         """Mark the finished mix as due for a laboratory sample."""

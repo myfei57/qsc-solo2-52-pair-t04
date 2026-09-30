@@ -7,6 +7,7 @@ from .facts import (
     CEMENT_FED,
     CHUTE_OPEN,
     HOPPER_RELEASED,
+    LOAD_BLOCKED,
     MIXER_RUNNING,
     MIX_TIMED,
     MOIST_COMPENSATED,
@@ -99,6 +100,12 @@ DEFAULT_RULES: tuple[InterlockRule, ...] = (
         action="chute.open",
         requires=(MIX_TIMED,),
         message="the discharge door needs a finished mixing window",
+    ),
+    InterlockRule(
+        name="chute-open-never-past-quarantine",
+        action="chute.open",
+        forbids=(LOAD_BLOCKED,),
+        message="the discharge door stays shut while the batch is quarantined",
     ),
     InterlockRule(
         name="chute-load-needs-open-door",

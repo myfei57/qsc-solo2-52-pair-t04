@@ -26,6 +26,7 @@ TRUCK_LOADED = "chute.loaded"
 PUMP_RUNNING = "pump.running"
 SAMPLER_LATCHED = "sampler.latched"
 MOIST_COMPENSATED = "moist.compensated"
+LOAD_BLOCKED = "load.blocked"
 
 
 def flag(state: Mapping[str, Any], path: str, key: str = "active") -> bool:
@@ -70,4 +71,5 @@ def derive_facts(state: Mapping[str, Any]) -> dict[str, bool]:
         PUMP_RUNNING: flag(state, "pump.run"),
         SAMPLER_LATCHED: _latch(state, "sampler"),
         MOIST_COMPENSATED: flag(state, "moist.comp"),
+        LOAD_BLOCKED: flag(state, "load.gate"),
     }

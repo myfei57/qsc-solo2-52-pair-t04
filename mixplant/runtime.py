@@ -21,6 +21,9 @@ from .event.subscribers import AlarmCollector, AuditSubscriber
 from .event.topics import ALARM, STORE
 from .ids import SequenceIds
 from .interlocks import build_engine
+from .load.criteria import LoadCriteria
+from .load.registry import HoldEntry
+from .load.service import LoadService
 from .mix.service import MixService
 from .moist.comp import Compensation
 from .moist.service import MoistService
@@ -53,6 +56,8 @@ LATCH_KIND = "sampler.latch"
 COMP_KIND = "moist.comp"
 SELECTED_KIND = "recipe.selected"
 PUBLISHED_KIND = "recipe.published"
+CRITERIA_KIND = "load.criteria"
+HOLD_KIND_PREFIX = "load.hold_"
 
 LINES: tuple[str, ...] = tuple(LINE_SEQUENCES)
 EXTRA_DEVICES = (
@@ -100,16 +105,17 @@ class PlantRuntime:
             gate=self.gate,
             ids=self.ids,
         )
+        self.audit = AuditService(self.context, self.machines["batch"], alarms=self.alarms)
+        self.load = LoadService(self.context, audit=self.audit, machine=self.machines["mix"])
         self.recipes = RecipeService(self.context, self.topology, self.machines["batch"])
         self.agg = AggService(self.context, self.recipes, self.machines["batch"])
         self.moist = MoistService(self.context, self.recipes.book, default_table(), self.machines["batch"])
         self.cement = CementService(self.context, self.machines["mix"])
         self.water = WaterService(self.context, self.machines["mix"])
-        self.mix = MixService(self.context, self.recipes, self.machines["mix"])
-        self.chute = ChuteService(self.context, self.recipes, self.machines["mix"])
+        self.mix = MixService(self.context, self.recipes, self.machines["mix"], load_monitor=self.load)
+        self.chute = ChuteService(self.context, self.recipes, self.machines["mix"], load_monitor=self.load)
         self.pump = PumpService(self.context, self.machines["delivery"])
         self.sampler = SamplerService(self.context, self.recipes, self.machines["delivery"])
-        self.audit = AuditService(self.context, self.machines["batch"], alarms=self.alarms)
         self.controller = PlantController(self)
         self.boot_report: RestoreReport | None = None
         self._services: dict[str, PlantService] = {
@@ -123,6 +129,7 @@ class PlantRuntime:
             "pump": self.pump,
             "sampler": self.sampler,
             "audit": self.audit,
+            "load": self.load,
         }
         self._wire_bus()
 
@@ -227,6 +234,28 @@ class PlantRuntime:
                     str(record.payload.get("unit", "")),
                     1,
                     validity=Validity.never(record.tick),
+                )
+            elif record.kind == CRITERIA_KIND:
+                self.load.adopt_criteria(LoadCriteria.from_document(record.payload))
+            elif record.kind.startswith(HOLD_KIND_PREFIX):
+                payload = record.payload
+                self.load.registry.adopt(
+                    HoldEntry(
+                        batch_id=str(payload["batch_id"]),
+                        grade=str(payload.get("grade", "")),
+                        state=str(payload.get("state", "under_review")),
+                        tick=int(payload.get("tick", record.tick)),
+                        reason=str(payload.get("reason", "")),
+                        triggers=tuple(payload.get("triggers") or ()),
+                        criteria_version=int(payload.get("criteria_version", 0)),
+                        disposition=str(payload.get("disposition", "")),
+                        mark_seq=record.seq,
+                        verdict_seq=payload.get("verdict_seq"),
+                        release_tick=payload.get("release_tick"),
+                        release_issuer=payload.get("release_issuer"),
+                        rollback_seq=payload.get("rollback_seq"),
+                        idempotency_key=payload.get("idempotency_key"),
+                    )
                 )
         self.moist.sync(corrections)
 
@@ -463,6 +492,39 @@ class PlantRuntime:
                 text(payload, "name"), self._detail(payload)
             ),
             "audit.rollup": lambda payload: self.audit.rollup(),
+            "load.observe": lambda payload: self.load.record_load(
+                batch_id=text(payload, "batch_id"), power_kw=number(payload, "power_kw")
+            ),
+            "load.observe_series": lambda payload: self._observe_series(dict(payload)),
+            "load.judge": lambda payload: self.load.judge_batch(
+                text(payload, "batch_id"),
+                auto_hold=str(payload.get("auto_hold", "true")).lower() in {"1", "true", "yes"},
+            ),
+            "load.mark": lambda payload: self.load.mark_batch(
+                text(payload, "batch_id"),
+                reason=optional_text(payload, "reason", "operator"),
+                idempotency_key=(None if payload.get("idempotency_key") in (None, "")
+                                 else str(payload["idempotency_key"])),
+            ),
+            "load.release": lambda payload: self.load.release_batch(
+                text(payload, "batch_id"),
+                issuer=optional_text(payload, "issuer", "operator"),
+                disposition=(None if payload.get("disposition") in (None, "")
+                             else str(payload["disposition"])),
+            ),
+            "load.rollback": lambda payload: self.load.rollback_batch(
+                text(payload, "batch_id"),
+                criteria_version=(None if payload.get("criteria_version") in (None, "")
+                                  else int(payload["criteria_version"])),
+                reason=optional_text(payload, "reason", "criteria untrusted after release"),
+                issuer=optional_text(payload, "issuer", "operator"),
+            ),
+            "load.rollback_criteria": lambda payload: self.load.rollback_criteria(
+                integer(payload, "version"),
+                reason=optional_text(payload, "reason", "criteria generation judged untrustworthy"),
+                issuer=optional_text(payload, "issuer", "operator"),
+            ),
+            "load.criteria": lambda payload: self.load.publish_criteria(**self._criteria_changes(payload)),
             "baseline.publish": lambda payload: self.publish_baseline(
                 text(payload, "name"),
                 number(payload, "value"),
@@ -528,3 +590,29 @@ class PlantRuntime:
     def _detail(payload: Mapping[str, Any]) -> dict[str, Any]:
         raw = payload.get("detail")
         return dict(raw) if isinstance(raw, Mapping) else {}
+
+    def _observe_series(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Record a list of motor load samples for one batch."""
+
+        batch_id = text(payload, "batch_id")
+        raw = payload.get("powers")
+        if not isinstance(raw, (list, tuple)):
+            from .errors import ValidationError
+
+            raise ValidationError("powers must be a list", field="powers")
+        return self.load.record_loads(batch_id=batch_id, powers=[float(value) for value in raw])
+
+    @staticmethod
+    def _criteria_changes(payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Pick the optional criteria fields out of a command body."""
+
+        names = (
+            "rated_power_kw",
+            "overload_pct",
+            "stall_pct",
+            "stall_fraction",
+            "overload_run",
+            "deviate_pct",
+            "min_samples",
+        )
+        return {name: payload[name] for name in names if payload.get(name) is not None}
